@@ -43,7 +43,6 @@ quarantine/
 *.log
 *.txt
 !requirements.txt
-!debug_log.txt
 
 # OS
 .DS_Store
