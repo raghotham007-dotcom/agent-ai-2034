@@ -1,0 +1,8 @@
+image_path,label,split
+data/chip_001.jpg,scratch,train
+data/chip_002.jpg,crack,train
+data/chip_003.jpg,good,train
+data/chip_004.jpg,discoloration,train
+data/chip_005.jpg,chip_off,train
+data/chip_006.jpg,scratch,val
+data/chip_007.jpg,good,val

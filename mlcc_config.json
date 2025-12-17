@@ -1,0 +1,11 @@
+{
+    "model_arch": "resnet18",
+    "pretrained": true,
+    "num_classes": 5,
+    "batch_size": 32,
+    "lr": 0.001,
+    "optimizer": "adam",
+    "epochs": 10,
+    "dropout": 0.2,
+    "weight_decay": 1e-5
+}
