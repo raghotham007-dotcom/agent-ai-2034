@@ -40,13 +40,25 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
         print(f"Loading Training Data from: {train_path}")
         print(f"Loading Validation Data from: {val_path}")
         
-        transform = transforms.Compose([
-            transforms.Resize((64, 64)),
+        # PHASE 1 FIX: Higher resolution + Runtime augmentation
+        train_transform = transforms.Compose([
+            transforms.Resize((224, 224)),  # Increased from 64x64
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomRotation(degrees=15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        train_dataset = datasets.ImageFolder(train_path, transform=transform)
-        val_dataset = datasets.ImageFolder(val_path, transform=transform)
+        val_transform = transforms.Compose([
+            transforms.Resize((224, 224)),  # Increased from 64x64
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        train_dataset = datasets.ImageFolder(train_path, transform=train_transform)
+        val_dataset = datasets.ImageFolder(val_path, transform=val_transform)
         
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False)
@@ -64,11 +76,16 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
     description = treatment.get('description', '') if treatment else ''
     print(f"Treatment: {description}")
 
-    # 2. Initialize Model (Real ResNet18)
-    print("Initializing ResNet18...")
-    model = models.resnet18(pretrained=True)
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, len(full_dataset.classes))
+    # 2. Initialize Model (PHASE 1 FIX: MobileNetV2 for better performance on small datasets)
+    print("Initializing MobileNetV2...")
+    from torchvision.models import mobilenet_v2
+    model = mobilenet_v2(pretrained=True)
+    
+    # Add dropout for regularization
+    model.classifier = nn.Sequential(
+        nn.Dropout(0.7),  # Increased from default 0.2
+        nn.Linear(model.last_channel, len(full_dataset.classes)),
+    )
     
     # Check for Class Weights (Persisted or New)
     weights_dict = None
@@ -92,9 +109,10 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
     if treatment and treatment.get('config'):
         active_config.update(treatment.get('config'))
     
-    # Use hyperparameters
+    # Use hyperparameters (PHASE 1 FIX: Stronger weight decay)
     lr = active_config.get('lr', 0.001)
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    weight_decay = active_config.get('weight_decay', 1e-3)  # Increased from 1e-4
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
     
     # LR Scheduler (ReduceLROnPlateau)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1)

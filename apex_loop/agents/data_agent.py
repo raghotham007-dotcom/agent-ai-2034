@@ -45,8 +45,9 @@ class DataOpsAgent:
         total_samples = sum(counts)
         
         # Calculate weights: (Total / (NumClasses * ClassCount)) ^ damping
-        # Damping = 0.5 (Square Root) softens the weights to reduce Overkill
-        damping = 0.5 
+        # PHASE 1 FIX: Increased damping to 0.8 (was 0.5) for stronger class weighting
+        # 1.0 = linear, 0.5 = sqrt, 0.8 = middle ground
+        damping = 0.8
         num_classes = len(class_counts)
         weights = {}
         
@@ -233,8 +234,9 @@ class DataOpsAgent:
                 # Load image
                 img = Image.open(img_path).convert('RGB')
                 
-                # Generate 2 augmented versions per image
-                for aug_idx in range(2):
+                # PHASE 1 FIX: Disable file-based augmentation (rely on runtime augmentation)
+                # Generate 0 augmented versions per image (was 2)
+                for aug_idx in range(0):
                     augmented_img = self.augmentation_transforms(img)
                     
                     # Save augmented image

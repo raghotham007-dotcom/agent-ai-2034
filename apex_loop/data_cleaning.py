@@ -170,14 +170,14 @@ def find_label_issues_cleanlab(embeddings: np.ndarray, labels: List[int], paths:
     # We only want to remove samples if the model is EXTREMELY confident they are wrong
     # AND the current label probability is effectively zero.
     
-    # Strictness thresholds
+    # Strictness thresholds (PHASE 1 FIX: More realistic thresholds)
     if strictness == 'aggressive':
-        prob_threshold_correct = 0.2  # If prob of given label is < 20%, maybe toss it
-        prob_threshold_wrong = 0.7    # If prob of other class is > 70%, toss it
+        prob_threshold_correct = 0.15  # If prob of given label is < 15%, maybe toss it (was 0.2)
+        prob_threshold_wrong = 0.75    # If prob of other class is > 75%, toss it (was 0.7)
     else:
-        # Standard/Safe (default): preserve hard examples
-        prob_threshold_correct = 0.01 # Only toss if model thinks there is < 1% chance it's correct
-        prob_threshold_wrong = 0.99   # AND model is > 99% sure it's the other thing
+        # Standard/Safe (default): preserve hard examples but catch obvious mislabels
+        prob_threshold_correct = 0.05  # Toss if model thinks there is < 5% chance it's correct (was 0.01)
+        prob_threshold_wrong = 0.90    # AND model is > 90% sure it's the other thing (was 0.99)
         
     print(f"[Cleanlab] Processing {len(issues_idx)} candidates with strictness='{strictness}'...")
     print(f"           (Thresholds: given_label_prob < {prob_threshold_correct} AND suggested_label_prob > {prob_threshold_wrong})")
