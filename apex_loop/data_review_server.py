@@ -41,7 +41,7 @@ DATASET_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dat
 QUARANTINE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "quarantine", "reviewed_discarded"))
 
 # In-memory store for candidates
-# Structure: { "filepath": { "path": "...", "reasons": ["Blurry"], "score": 0.5, "status": "pending" } }
+# Structure: { "filepath": { "path": "...", "reasons": ["Blurry"], "score": 0.5, "status": "pending", "label": "class_x" } }
 CANDIDATES: Dict[str, Dict] = {}
 SCANNING = False
 SCAN_PROGRESS = "Idle"
@@ -59,7 +59,15 @@ class BulkActionRequest(BaseModel):
     filepaths: List[str]
     action: str
 
+class MoveRequest(BaseModel):
+    filepath: str
+    target_class: str
+
 # --- Scanning Logic ---
+def get_label_from_path(path: str) -> str:
+    """Extracts class label from directory structure (parent folder name)."""
+    return os.path.basename(os.path.dirname(path))
+
 def run_scan_thread():
     global SCANNING, SCAN_PROGRESS, CANDIDATES
     SCANNING = True
@@ -78,7 +86,12 @@ def run_scan_thread():
                     h = calculate_md5(full_path)
                     if h in hashes:
                         if full_path not in CANDIDATES:
-                            CANDIDATES[full_path] = {"path": full_path, "reasons": [], "status": "pending"}
+                            CANDIDATES[full_path] = {
+                                "path": full_path, 
+                                "reasons": [], 
+                                "status": "pending",
+                                "label": get_label_from_path(full_path)
+                            }
                         CANDIDATES[full_path]["reasons"].append(f"Duplicate of {os.path.basename(hashes[h])}")
                     else:
                         hashes[h] = full_path
@@ -92,7 +105,12 @@ def run_scan_thread():
                     is_bad, score = is_blurry(full_path, threshold=BLUR_THRESHOLD)
                     if is_bad:
                         if full_path not in CANDIDATES:
-                            CANDIDATES[full_path] = {"path": full_path, "reasons": [], "status": "pending"}
+                            CANDIDATES[full_path] = {
+                                "path": full_path, 
+                                "reasons": [], 
+                                "status": "pending",
+                                "label": get_label_from_path(full_path)
+                            }
                         CANDIDATES[full_path]["reasons"].append(f"Blurry (Score: {score:.2f})")
                         CANDIDATES[full_path]["score"] = float(score)
 
@@ -106,7 +124,6 @@ def run_scan_thread():
             GLOBAL_EMBEDDINGS = emb
             GLOBAL_PATHS = paths
             # Fit NearestNeighbors for fast lookup
-            # Normalize for cosine similarity (L2 norm) or just use Euclidean
             SCAN_PROGRESS = "Indexing for similarity search..."
             nbrs = NearestNeighbors(n_neighbors=20, algorithm='auto', metric='euclidean').fit(emb)
             GLOBAL_INDEX = nbrs
@@ -116,15 +133,24 @@ def run_scan_thread():
             outliers = find_outliers(emb, labels, paths, std_dev_threshold=3.5)
             for path, dist in outliers:
                 if path not in CANDIDATES:
-                    CANDIDATES[path] = {"path": path, "reasons": [], "status": "pending"}
+                    CANDIDATES[path] = {
+                        "path": path, 
+                        "reasons": [], 
+                        "status": "pending",
+                        "label": get_label_from_path(path)
+                    }
                 CANDIDATES[path]["reasons"].append(f"Outlier (Dist: {dist:.2f})")
             
             SCAN_PROGRESS = "Analyzing label issues (Cleanlab)..."
-            # strictness='standard' is safer
             mislabeled = find_label_issues_cleanlab(emb, labels, paths, strictness='standard')
             for path in mislabeled:
                 if path not in CANDIDATES:
-                    CANDIDATES[path] = {"path": path, "reasons": [], "status": "pending"}
+                    CANDIDATES[path] = {
+                        "path": path, 
+                        "reasons": [], 
+                        "status": "pending",
+                        "label": get_label_from_path(path)
+                    }
                 CANDIDATES[path]["reasons"].append("Suspected Mislabeled")
         
         SCAN_PROGRESS = "Done"
@@ -153,12 +179,18 @@ def get_status():
         "count": len(CANDIDATES)
     }
 
+@app.get("/api/classes")
+def get_classes():
+    """Returns a list of all available class names."""
+    try:
+        classes = [d for d in os.listdir(DATASET_DIR) if os.path.isdir(os.path.join(DATASET_DIR, d)) and not d.startswith('.')]
+        return sorted(classes)
+    except Exception as e:
+        return []
+
 @app.get("/api/candidates")
 def get_candidates():
     # Return list of pending candidates
-    # Convert absolute paths to relative/ID for frontend if needed, 
-    # but for local tool, absolute path usage in keys is fine.
-    # We will send a sanitized list to frontend
     items = []
     for path, data in CANDIDATES.items():
         if data["status"] == "pending":
@@ -166,7 +198,8 @@ def get_candidates():
                 "id": path, # Use path as ID
                 "filename": os.path.basename(path),
                 "reasons": data["reasons"],
-                "score": data.get("score", 0)
+                "score": data.get("score", 0),
+                "label": data.get("label", get_label_from_path(path))
             })
     return items
 
@@ -194,7 +227,6 @@ def find_similar(path: str):
         distances, indices = GLOBAL_INDEX.kneighbors(query_vec)
         
         # indices is [[idx, nearest1, nearest2...]]
-        # Skip the first one (it's the query image itself, usually, unless duplicate)
         
         similar_items = []
         # flatten
@@ -203,11 +235,11 @@ def find_similar(path: str):
         
         for i, neighbor_idx in enumerate(found_indices):
             if neighbor_idx == idx:
-                continue # Skip self within reason (unless duplicate content at diff path)
+                continue # Skip self within reason 
             
             neighbor_path = GLOBAL_PATHS[neighbor_idx]
             
-            # Check if this file is already in CANDIDATES (so we can show existing reasons)
+            # Check if this file is already in CANDIDATES
             reasons = []
             if neighbor_path in CANDIDATES:
                 reasons = CANDIDATES[neighbor_path]["reasons"]
@@ -217,7 +249,8 @@ def find_similar(path: str):
                 "filename": os.path.basename(neighbor_path),
                 "reasons": reasons,
                 "distance": float(found_dists[i]),
-                "is_candidate": neighbor_path in CANDIDATES
+                "is_candidate": neighbor_path in CANDIDATES,
+                "label": get_label_from_path(neighbor_path)
             })
             
         return similar_items
@@ -228,10 +261,40 @@ def find_similar(path: str):
         print(f"Similarity search error: {e}")
         return {"error": str(e)}
 
+@app.post("/api/action/move")
+def move_file(req: MoveRequest):
+    """Moves a file to a different class directory."""
+    if not os.path.exists(req.filepath):
+         return {"error": "File not found"}
+    
+    target_dir = os.path.join(DATASET_DIR, req.target_class)
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+        
+    filename = os.path.basename(req.filepath)
+    new_path = os.path.join(target_dir, filename)
+    
+    # Handle filename collision
+    if os.path.exists(new_path):
+        base, ext = os.path.splitext(filename)
+        new_path = os.path.join(target_dir, f"{base}_moved_{np.random.randint(1000)}{ext}")
+        
+    try:
+        shutil.move(req.filepath, new_path)
+        
+        # Update CANDIDATES if present
+        if req.filepath in CANDIDATES:
+            CANDIDATES[req.filepath]["status"] = "moved"
+            
+        return {"status": "ok", "new_path": new_path}
+    except Exception as e:
+        print(f"Move failed: {e}")
+        return {"error": str(e)}
+
 @app.post("/api/action")
 def take_action(req: ActionRequest):
     if req.filepath not in CANDIDATES and req.action == "discard":
-         # Allow discarding non-candidates too (from similarity search)
+         # Allow discarding non-candidates too
          pass
          
     if req.filepath in CANDIDATES:
@@ -239,14 +302,12 @@ def take_action(req: ActionRequest):
     
     if req.action == "discard":
         # Move to quarantine
-        # Replicate directory structure
         try:
             rel_path = os.path.relpath(req.filepath, DATASET_DIR)
             dest = os.path.join(QUARANTINE_DIR, rel_path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.move(req.filepath, dest)
         except Exception as e:
-            # If file already moved/gone, just ignore
             pass
             
     return {"status": "ok"}
