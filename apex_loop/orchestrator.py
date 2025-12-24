@@ -18,6 +18,38 @@ data_agent = DataOpsAgent()
 
 
 
+# ==========================================
+# DINOv2 Custom Model
+# ==========================================
+class DINOSorter(nn.Module):
+    def __init__(self, num_classes=2):
+        super(DINOSorter, self).__init__()
+        
+        # Load DINOv2 (The Feature Extractor)
+        print("Loading DINOv2 backbone...")
+        self.backbone = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+        
+        # FREEZE the backbone (We only want to train the head for now)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+            
+        # The DINO 'Small' model outputs a vector of size 384
+        # We add a small Neural Network on top
+        self.classifier = nn.Sequential(
+            nn.Linear(384, 256),  # Input 384 -> Hidden Layer
+            nn.ReLU(),            # Activation
+            nn.Dropout(0.2),      # Prevent Overfitting
+            nn.Linear(256, num_classes) # Output Layer (Good vs Defect)
+        )
+
+    def forward(self, x):
+        # 1. Extract Features
+        features = self.backbone(x)
+        
+        # 2. Pass through Classifier
+        output = self.classifier(features)
+        return output
+
 def trainer_node(state: AgentState) -> Dict[str, Any]:
     """
     Runs a REAL PyTorch training step on the provided dataset.
@@ -76,16 +108,10 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
     description = treatment.get('description', '') if treatment else ''
     print(f"Treatment: {description}")
 
-    # 2. Initialize Model (PHASE 1 FIX: MobileNetV2 for better performance on small datasets)
-    print("Initializing MobileNetV2...")
-    from torchvision.models import mobilenet_v2
-    model = mobilenet_v2(pretrained=True)
-    
-    # Add dropout for regularization
-    model.classifier = nn.Sequential(
-        nn.Dropout(0.7),  # Increased from default 0.2
-        nn.Linear(model.last_channel, len(full_dataset.classes)),
-    )
+    # 2. Initialize Model (DINOv2)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Initializing DINOv2 Model on {device}...")
+    model = DINOSorter(num_classes=len(full_dataset.classes)).to(device)
     
     # Check for Class Weights (Persisted or New)
     weights_dict = None
@@ -138,6 +164,7 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
         
         # FULL BATCH LOOP (No limits)
         for i, (inputs, labels) in enumerate(train_loader):
+            inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
@@ -163,6 +190,7 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
         val_loss = 0.0
         with torch.no_grad():
             for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
                 val_loss += loss.item()
@@ -198,6 +226,7 @@ def trainer_node(state: AgentState) -> Dict[str, Any]:
     
     with torch.no_grad():
         for inputs, labels in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             val_loss += loss.item()
